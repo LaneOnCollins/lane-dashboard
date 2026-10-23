@@ -152,12 +152,35 @@ const ADAPTERS = {
      connect.squareupsandbox.com.
   */
   pos: {
-    configured: false,
-    auth: null,
+    /* Square, wired October 2026: pasted production personal access token
+       (secret POS_API_TOKEN). The count comes from Square's Reporting API, one
+       aggregate call per period, on the seller's own reporting day. Never a
+       dollar figure. */
+    configured: true,
+    auth: 'token',
     oauth: {},
-    async status(env, h) { return { connected: false }; },
-    async fetchRange(env, h, q) { throw new NotConfigured('pos'); },
-    async fetchMonthly(env, h, q) { throw new NotConfigured('pos'); }
+    async status(env, h) {
+      if (!String(env.POS_API_TOKEN || '').trim()) return { connected: false };
+      const res = await squareFetch(env, '/v2/locations', null);
+      const locs = (res && res.locations) || [];
+      const active = locs.filter((l) => l.status === 'ACTIVE');
+      const biz = (active[0] || locs[0] || {}).business_name || '';
+      const names = active.map((l) => l.name).join(', ');
+      return { connected: true, org: biz + (names ? ' · ' + names : ''), sandbox: false };
+    },
+    async fetchRange(env, h, q) {
+      const rows = await squareCount(env, [q.from, q.to], null, q.tz);
+      return { count: rows.length ? rows.reduce((a, r) => a + r.count, 0) : 0 };
+    },
+    async fetchMonthly(env, h, q) {
+      const months = monthList(q.fromMonth, q.toMonth);
+      const [y, m] = q.toMonth.split('-').map(Number);
+      const lastDay = String(new Date(Date.UTC(y, m, 0)).getUTCDate()).padStart(2, '0');
+      const rows = await squareCount(env, [q.fromMonth + '-01', q.toMonth + '-' + lastDay], 'month', q.tz);
+      const byMonth = {};
+      rows.forEach((r) => { byMonth[r.month] = r.count; });
+      return { months, count: months.map((mo) => (mo in byMonth ? byMonth[mo] : null)) };
+    }
   },
 
   /* >>> ADAPTER 3: ROSTERING (optional - only if the owner has one)
@@ -231,12 +254,13 @@ const round2 = (v) => Math.round(v * 100) / 100;
 
 /* Keep the last few provider errors (status + short detail, never tokens) so the
    build can be diagnosed from /api/diag without access to Cloudflare logs. */
-async function xeroNote(env, what, err) {
+async function xeroNote(env, what, err) { return diagNote(env, 'accounting', what, err); }
+async function diagNote(env, source, what, err) {
   try {
-    const raw = await env.TOKENS.get('diag:accounting');
+    const raw = await env.TOKENS.get('diag:' + source);
     const list = raw ? JSON.parse(raw) : [];
     list.unshift({ at: new Date().toISOString(), what, status: (err && err.status) || 0, detail: String((err && err.detail) || (err && err.message) || '').slice(0, 300) });
-    await env.TOKENS.put('diag:accounting', JSON.stringify(list.slice(0, 15)), { expirationTtl: 86400 });
+    await env.TOKENS.put('diag:' + source, JSON.stringify(list.slice(0, 15)), { expirationTtl: 86400 });
   } catch (e) {}
 }
 
@@ -274,6 +298,47 @@ function xeroColumns(report, n) {
     revenue: round2(c.revenue), cogs: round2(c.cogs),
     wagesSuper: round2(c.wagesSuper), overheads: round2(c.opex - c.wagesSuper)
   }));
+}
+
+/* ---------------- Square helpers (pos adapter) ---------------- */
+const SQUARE_API = 'https://connect.squareup.com';
+/* Which Square count is "Number of transactions": the measure that matches the
+   owner's Square Sales summary, confirmed at reconciliation. */
+const SQUARE_COUNT_MEASURE = 'Sales.total_sales_count';
+
+async function squareFetch(env, path, body) {
+  const token = String(env.POS_API_TOKEN || '').trim();
+  if (!token) { const e = new Error('no token'); e.status = 401; throw e; }
+  const res = await fetch(SQUARE_API + path, {
+    method: body ? 'POST' : 'GET',
+    headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: body ? JSON.stringify(body) : undefined
+  });
+  if (!res.ok) {
+    const e = new Error('HTTP ' + res.status); e.status = res.status;
+    try { e.detail = (await res.text()).slice(0, 300); } catch (x) {}
+    throw e;
+  }
+  return res.json();
+}
+
+/* Count of completed sales for a date range, optionally grouped by month.
+   Returns [{ month:'YYYY-MM'|null, count }]. */
+async function squareCount(env, range, granularity, tz) {
+  const td = { dimension: 'Sales.reporting_day', dateRange: range };
+  if (granularity) td.granularity = granularity;
+  try {
+    const res = await squareFetch(env, '/reporting/v1/load', {
+      query: { measures: [SQUARE_COUNT_MEASURE], timeDimensions: [td], timezone: tz || 'Australia/Sydney', limit: 1000 }
+    });
+    return ((res && res.data) || []).map((r) => ({
+      month: granularity ? String(r['Sales.reporting_day.' + granularity] || '').slice(0, 7) : null,
+      count: Math.round(Number(r[SQUARE_COUNT_MEASURE]) || 0)
+    }));
+  } catch (err) {
+    await diagNote(env, 'pos', 'count ' + range.join('..') + (granularity ? ' by ' + granularity : ''), err);
+    throw err;
+  }
 }
 
 /* ============================================================================
@@ -915,8 +980,12 @@ export default {
     }
     if (path === '/api/diag' && request.method === 'GET') {
       if (!loggedIn) return json({ error: 'auth' }, 401);
-      const raw = await env.TOKENS.get('diag:accounting');
-      return json({ accounting: raw ? JSON.parse(raw) : [] });
+      const out = {};
+      for (const src of ['accounting', 'pos', 'rostering']) {
+        const raw = await env.TOKENS.get('diag:' + src);
+        out[src] = raw ? JSON.parse(raw) : [];
+      }
+      return json(out);
     }
     if (path === '/api/disconnect' && request.method === 'POST') {
       if (!loggedIn) return json({ error: 'auth' }, 401);
