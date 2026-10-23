@@ -193,12 +193,28 @@ const ADAPTERS = {
      Example (Deputy): pasted permanent token (secret ROSTERING_API_TOKEN).
   */
   rostering: {
-    configured: false,
+    /* Connecteam (no API on the owner's plan): fed by the Time Clock shift
+       report export (CSV), uploaded weekly on the Connections screen. Cost =
+       clocked shift hours x the shift's hourly rate, plus super at the SG rate,
+       by shift start date. Absences/time off are left out. Always shown as
+       PROJECTED beside the actual Wage % from Xero. */
+    configured: true,
+    mode: 'export',
     auth: null,
     oauth: {},
-    async status(env, h) { return { connected: false }; },
-    async fetchRange(env, h, q) { throw new NotConfigured('rostering'); },
-    async fetchMonthly(env, h, q) { return { months: [], cost: [] }; }
+    async status(env, h) {
+      const last = await env.TOKENS.get('lastSync:rostering');
+      return { connected: !!last, org: last ? 'Connecteam time clock (uploaded file)' : null, lastSync: last };
+    },
+    async fetchRange(env, h, q) {
+      const r = await h.readIngested(q.from, q.to);
+      return r.daysWithData ? { cost: round2(r.sums.cost || 0) } : null;
+    },
+    async fetchMonthly(env, h, q) {
+      const m = await h.monthlyIngested(q.fromMonth, q.toMonth);
+      return { months: m.months, cost: m.byMonth.map((x) => (x ? round2(x.cost || 0) : null)) };
+    },
+    async parseExport(env, h, raw) { return parseConnecteamTimeclock(raw.text); }
   }
 };
 
@@ -349,6 +365,65 @@ async function squareCount(env, range, granularity, tz) {
     await diagNote(env, 'pos', 'count ' + range.join('..') + (granularity ? ' by ' + granularity : ''), err);
     throw err;
   }
+}
+
+/* ---------------- Connecteam time clock export (rostering adapter) ---------- */
+const SUPER_RATE = 0.12; /* Australian superannuation guarantee rate from 1 July 2025 */
+
+function parseCsv(text) {
+  const rows = []; let row = []; let cell = ''; let q = false;
+  const t = String(text || '').replace(/^﻿/, '');
+  for (let i = 0; i < t.length; i++) {
+    const c = t[i];
+    if (q) {
+      if (c === '"' && t[i + 1] === '"') { cell += '"'; i++; }
+      else if (c === '"') q = false;
+      else cell += c;
+    } else if (c === '"') q = true;
+    else if (c === ',') { row.push(cell); cell = ''; }
+    else if (c === '\n' || c === '\r') {
+      if (c === '\r' && t[i + 1] === '\n') i++;
+      row.push(cell); rows.push(row); row = []; cell = '';
+    } else cell += c;
+  }
+  if (cell !== '' || row.length) { row.push(cell); rows.push(row); }
+  return rows;
+}
+/* '18/10/2026' (AU), '2026-10-18' or '2026-10-18 00:00:00' -> 'YYYY-MM-DD' */
+function isoDate(s) {
+  s = String(s || '').trim();
+  let m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s);
+  if (m) return m[1] + '-' + m[2] + '-' + m[3];
+  m = /^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/.exec(s);
+  if (m) {
+    const y = m[3].length === 2 ? '20' + m[3] : m[3];
+    return y + '-' + m[2].padStart(2, '0') + '-' + m[1].padStart(2, '0');
+  }
+  return null;
+}
+/* '04:30' -> 4.5; '4.5' -> 4.5 */
+function hoursOf(s) {
+  s = String(s || '').trim();
+  const m = /^(\d+):(\d{2})$/.exec(s);
+  if (m) return Number(m[1]) + Number(m[2]) / 60;
+  const v = parseFloat(s);
+  return isFinite(v) ? v : 0;
+}
+function parseConnecteamTimeclock(text) {
+  const rows = parseCsv(text);
+  const hi = rows.findIndex((r) => r.some((c) => /^start date$/i.test(c.trim())) && r.some((c) => /^shift hours$/i.test(c.trim())));
+  if (hi < 0) throw new Error('not a Connecteam time clock report');
+  const head = rows[hi].map((c) => c.trim().toLowerCase());
+  const col = (re) => head.findIndex((c) => re.test(c));
+  const iDate = col(/^start date$/), iIn = col(/^in$/), iHours = col(/^shift hours$/), iRate = col(/^hourly rate/);
+  const byDay = {};
+  for (const r of rows.slice(hi + 1)) {
+    const date = isoDate(r[iDate]);
+    if (!date || !String(r[iIn] || '').trim()) continue; /* absences/time off have no clock-in */
+    const cost = hoursOf(r[iHours]) * (parseFloat(r[iRate]) || 0) * (1 + SUPER_RATE);
+    byDay[date] = (byDay[date] || 0) + cost;
+  }
+  return Object.keys(byDay).sort().map((date) => ({ date, cost: Math.round(byDay[date] * 100) / 100 }));
 }
 
 /* ============================================================================
