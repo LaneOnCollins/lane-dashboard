@@ -380,8 +380,14 @@ async function squareCount(env, range, granularity, tz) {
 const SUPER_RATE = 0.12; /* Australian superannuation guarantee rate from 1 July 2025 */
 /* Fixed annual pay before super, as the owner gave it: the two owners at
    $70,000 each and Hannah Feldhausen (full time) at $67,000. */
-const SALARIED_ANNUAL_PAY = 70000 + 70000 + 67000;
-function salariedCost(days) { return SALARIED_ANNUAL_PAY * (1 + SUPER_RATE) / 365 * days; }
+const SALARIES = [
+  { label: 'Becky', annual: 70000 },
+  { label: 'Robbie', annual: 70000 },
+  { label: 'Hannah F', annual: 67000 }
+];
+const SALARIED_ANNUAL_PAY = SALARIES.reduce((a, x) => a + x.annual, 0);
+function annualCost(annual, days) { return annual * (1 + SUPER_RATE) / 365 * days; }
+function salariedCost(days) { return annualCost(SALARIED_ANNUAL_PAY, days); }
 function dayCount(from, to) { return Math.round((Date.parse(to + 'T00:00:00Z') - Date.parse(from + 'T00:00:00Z')) / 86400000) + 1; }
 function daysInMonth(ym) { const [y, m] = ym.split('-').map(Number); return new Date(Date.UTC(y, m, 0)).getUTCDate(); }
 
@@ -706,7 +712,9 @@ async function forecastPage(env) {
     if (!c) { rows += '<tr><td>' + label + '</td><td class="muted" colspan="2">No roster uploaded yet</td></tr>'; continue; }
     const pct = avgRevenue ? c.cost / avgRevenue * 100 : null;
     const cls = pct == null ? '' : pct > target ? 'over' : 'ok';
-    rows += '<tr><td>' + label + '</td><td>' + fmtMoney(c.cost) + '</td><td class="pct ' + cls + '" data-pct="' + (pct == null ? '' : pct) + '">' + (pct == null ? '-' : pct.toFixed(1) + '%') + '</td></tr>';
+    const split = SALARIES.map((x) => x.label + ' ' + fmtMoney(annualCost(x.annual, 7)));
+    const hourly = c.cost - salariedCost(7);
+    rows += '<tr><td>' + label + '</td><td>' + fmtMoney(c.cost) + '<span>Hourly staff ' + fmtMoney(hourly) + ' \u00b7 ' + split.join(' \u00b7 ') + '</span></td><td class="pct ' + cls + '" data-pct="' + (pct == null ? '' : pct) + '">' + (pct == null ? '-' : pct.toFixed(1) + '%') + '</td></tr>';
   }
   const base = avgRevenue
     ? 'Average weekly revenue ' + fmtMoney(avgRevenue) + ', from Xero for ' + fmtDay(baseFrom) + ' to ' + fmtDay(baseTo) + ' (ex-GST). Last week is left out because Xero runs about a week behind.'
@@ -725,7 +733,7 @@ async function forecastPage(env) {
     + '.over{color:#C04B28;font-weight:500}.ok{color:#2F7A55;font-weight:500}.muted{color:#8C8075}'
     + '</style></head><body><div class="wrap"><a href="/">\u2190 Back to dashboard</a>'
     + '<h1>Roster forecast</h1><span class="tag">FORECAST</span>'
-    + '<p>Wage cost from your uploaded Connecteam roster (draft shifts included, plus the fixed salaries for you, Robbie and Hannah F), compared with a typical week\u2019s revenue. Wage target <b id="tg">' + target + '</b>%.</p>'
+    + '<p>Wage cost from your uploaded Connecteam roster (draft shifts included, plus the fixed salaries for you, Robbie and Hannah F), compared with a typical week\u2019s revenue. Each salary includes super. Wage target <b id="tg">' + target + '</b>%.</p>'
     + '<table><thead><tr><th>Week</th><th>Rostered cost</th><th>% of usual revenue</th></tr></thead><tbody>' + rows + '</tbody></table>'
     + '<p>' + base + '</p></div>'
     + '<script>try{var t=Number((JSON.parse(localStorage.getItem("vd_settings")||"{}").targets||{}).wage);'
