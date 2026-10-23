@@ -178,6 +178,9 @@ const XERO_API = 'https://api.xero.com';
 const WAGE_PATTERN = /wage|salar|superannuation|\bsuper\b|payroll|annual leave|long service|workcover/i;
 const WAGE_ACCOUNTS_EXTRA = [];
 const WAGE_ACCOUNTS_EXCLUDE = [];
+/* Non-trading lines that some charts keep inside the Income section (interest).
+   Revenue is trading income only (kpi-spec.md), so these are left out of it. */
+const REVENUE_EXCLUDE_PATTERN = /interest/i;
 
 function isWageAccount(name) {
   const n = String(name || '').trim().toLowerCase();
@@ -234,7 +237,7 @@ function xeroColumns(report, n) {
       const label = row.Cells && row.Cells[0] && row.Cells[0].Value;
       for (let i = 0; i < n; i++) {
         const v = xeroNum(row.Cells[i + 1]);
-        if (kind === 'revenue') cols[i].revenue += v;
+        if (kind === 'revenue') { if (!REVENUE_EXCLUDE_PATTERN.test(String(label || ''))) cols[i].revenue += v; }
         else if (kind === 'cogs') cols[i].cogs += v;
         else {
           cols[i].opex += v;
