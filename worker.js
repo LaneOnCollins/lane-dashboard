@@ -302,9 +302,15 @@ function xeroColumns(report, n) {
 
 /* ---------------- Square helpers (pos adapter) ---------------- */
 const SQUARE_API = 'https://connect.squareup.com';
-/* Which Square count is "Number of transactions": the measure that matches the
-   owner's Square Sales summary, confirmed at reconciliation. */
-const SQUARE_COUNT_MEASURE = 'Sales.total_sales_count';
+/* "Number of transactions" = closed sale orders on the seller's reporting day:
+   all closed orders less the refund/return orders, which reconciles with the
+   Transactions figure on the owner's Square Sales summary (Sept 2026: 2,266
+   orders - 2 itemized returns - 3 refunds = 2,261, confirmed by the owner). */
+const SQUARE_MEASURES = ['Orders.count', 'Orders.itemized_returns_count', 'Orders.refunds_by_amount_count'];
+function squareSalesCount(row) {
+  const n = (k) => Number(row[k]) || 0;
+  return Math.max(0, Math.round(n('Orders.count') - n('Orders.itemized_returns_count') - n('Orders.refunds_by_amount_count')));
+}
 
 async function squareFetch(env, path, body) {
   const token = String(env.POS_API_TOKEN || '').trim();
@@ -325,15 +331,15 @@ async function squareFetch(env, path, body) {
 /* Count of completed sales for a date range, optionally grouped by month.
    Returns [{ month:'YYYY-MM'|null, count }]. */
 async function squareCount(env, range, granularity, tz) {
-  const td = { dimension: 'Sales.reporting_day', dateRange: range };
+  const td = { dimension: 'Orders.reporting_day', dateRange: range };
   if (granularity) td.granularity = granularity;
   try {
     const res = await squareFetch(env, '/reporting/v1/load', {
-      query: { measures: [SQUARE_COUNT_MEASURE], timeDimensions: [td], timezone: tz || 'Australia/Sydney', limit: 1000 }
+      query: { measures: SQUARE_MEASURES, timeDimensions: [td], segments: ['Orders.closed_checks'], timezone: tz || 'Australia/Sydney', limit: 1000 }
     });
     return ((res && res.data) || []).map((r) => ({
-      month: granularity ? String(r['Sales.reporting_day.' + granularity] || '').slice(0, 7) : null,
-      count: Math.round(Number(r[SQUARE_COUNT_MEASURE]) || 0)
+      month: granularity ? String(r['Orders.reporting_day.' + granularity] || '').slice(0, 7) : null,
+      count: squareSalesCount(r)
     }));
   } catch (err) {
     await diagNote(env, 'pos', 'count ' + range.join('..') + (granularity ? ' by ' + granularity : ''), err);
