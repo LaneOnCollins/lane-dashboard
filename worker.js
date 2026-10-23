@@ -302,10 +302,14 @@ function xeroColumns(report, n) {
 
 /* ---------------- Square helpers (pos adapter) ---------------- */
 const SQUARE_API = 'https://connect.squareup.com';
-/* "Number of transactions" = closed sale orders on the seller's reporting day:
-   all closed orders less the refund/return orders, which reconciles with the
-   Transactions figure on the owner's Square Sales summary (Sept 2026: 2,266
-   orders - 2 itemized returns - 3 refunds = 2,261, confirmed by the owner). */
+/* "Number of transactions" = closed sale orders on the seller's reporting day.
+   Square records each refund/return as its own order with no item sales, so
+   those refund records are taken out of the order count (kpi-spec.md: "voids
+   and refunds excluded"); the original sales stay counted, so a refund never
+   reduces the count of sales (capability-matrix.md: "Refunds are separate
+   records - do not let them reduce the count"). Checked Sept 2026: 2,266 closed
+   orders, 5 of them refund-only (0 item sales) = 2,261 = the owner's Square
+   Sales summary Transactions. */
 const SQUARE_MEASURES = ['Orders.count', 'Orders.itemized_returns_count', 'Orders.refunds_by_amount_count'];
 function squareSalesCount(row) {
   const n = (k) => Number(row[k]) || 0;
