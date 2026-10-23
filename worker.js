@@ -428,7 +428,7 @@ function hoursOf(s) {
 const STAFF_RATES = {
   'ally lawrence': 28.78, 'archie cunningham': 16.16, 'bowie longbottom': 28.78,
   'ella koenig': 28.78, 'hannah feldhausen': 33.91, 'hannah greene': 33.85,
-  'mia lawrence': 28.78, 'mitch smee': 33.85, 'sam herdson': 16.53,
+  'mia lawrence': 28.78, 'mitch smee': 33.85, 'peter verkerk': 33.85, 'sam herdson': 16.53,
   'spencer vaughan': 16.53, 'will campbell': 24.48, 'wing ee yap': 33.85
 };
 /* The owners are on the roster but paid a fixed amount (OWNERS_ANNUAL_PAY). */
