@@ -8,6 +8,7 @@
 name = "lane-dashboard"          # SET to the GitHub REPO name before first push - sets the URL and must match the repo (else Workers Builds opens a reconciling PR)
 main = "worker.js"
 compatibility_date = "2026-06-01"
+workers_dev = true                # keep the free .workers.dev address switched on
 
 # The dashboard page is bundled into the Worker as text.
 rules = [
