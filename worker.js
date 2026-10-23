@@ -294,8 +294,8 @@ async function lastSync(env, source) {
    header, NOT in the body (Xero and most OpenID providers expect this); 'post'
    (or unset, for back-compat) -> client_id/client_secret in the form body. */
 function tokenRequestInit(cfg, params, env) {
-  const id = env[cfg.clientIdSecret] || '';
-  const secret = env[cfg.clientSecretSecret] || '';
+  const id = String(env[cfg.clientIdSecret] || '').trim();
+  const secret = String(env[cfg.clientSecretSecret] || '').trim();
   const headers = { 'Content-Type': 'application/x-www-form-urlencoded' };
   const body = new URLSearchParams(params);
   if ((cfg.tokenAuth || 'post') === 'basic') {
@@ -555,12 +555,22 @@ async function authStart(env, source, url) {
     return new Response('This connection is not set up for browser authorisation yet.', { status: 404 });
   }
   const cfg = adapter.oauth;
+  /* Catch the common setup slip before sending the owner to the provider: the
+     app code missing (saved under the wrong name, or as a build-only variable). */
+  const clientId = String(env[cfg.clientIdSecret] || '').trim();
+  if (!clientId || !String(env[cfg.clientSecretSecret] || '').trim()) {
+    const missing = [cfg.clientIdSecret, cfg.clientSecretSecret].filter((n) => !String(env[n] || '').trim());
+    return htmlResponse('<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Almost there</title></head>'
+      + '<body style="font-family:sans-serif;max-width:520px;margin:3rem auto;padding:0 1rem;line-height:1.6;color:#2A2420">'
+      + '<h1 style="font-size:24px">Almost there</h1><p>Your dashboard can\u2019t see this code yet: <b>' + missing.join(', ') + '</b>.</p>'
+      + '<p>Tell your AI what this page says. It will help you add it in Cloudflare.</p><p><a href="/">Back to your dashboard</a></p></body></html>');
+  }
   const state = randomState();
   await env.TOKENS.put('oauthstate:' + source, state, { expirationTtl: 600 });
   const redirectUri = url.origin + '/auth/' + source + '/callback';
   const p = new URLSearchParams({
     response_type: 'code',
-    client_id: env[cfg.clientIdSecret] || '',
+    client_id: clientId,
     redirect_uri: redirectUri,
     scope: cfg.scopes || '',
     state
