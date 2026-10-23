@@ -197,7 +197,9 @@ const ADAPTERS = {
        report export (CSV), uploaded weekly on the Connections screen. Cost =
        clocked shift hours x the shift's hourly rate, plus super at the SG rate,
        by shift start date. Absences/time off are left out. Always shown as
-       PROJECTED beside the actual Wage % from Xero. */
+       PROJECTED beside the actual Wage % from Xero. The two owners don't clock
+       in, so their fixed pay (OWNERS_ANNUAL_PAY, plus super) is added per day
+       for any period that has uploaded shifts. */
     configured: true,
     mode: 'export',
     auth: null,
@@ -208,11 +210,11 @@ const ADAPTERS = {
     },
     async fetchRange(env, h, q) {
       const r = await h.readIngested(q.from, q.to);
-      return r.daysWithData ? { cost: round2(r.sums.cost || 0) } : null;
+      return r.daysWithData ? { cost: round2((r.sums.cost || 0) + ownersCost(dayCount(q.from, q.to))) } : null;
     },
     async fetchMonthly(env, h, q) {
       const m = await h.monthlyIngested(q.fromMonth, q.toMonth);
-      return { months: m.months, cost: m.byMonth.map((x) => (x ? round2(x.cost || 0) : null)) };
+      return { months: m.months, cost: m.byMonth.map((x, i) => (x ? round2((x.cost || 0) + ownersCost(daysInMonth(m.months[i]))) : null)) };
     },
     async parseExport(env, h, raw) { return parseConnecteamTimeclock(raw.text); }
   }
@@ -369,6 +371,11 @@ async function squareCount(env, range, granularity, tz) {
 
 /* ---------------- Connecteam time clock export (rostering adapter) ---------- */
 const SUPER_RATE = 0.12; /* Australian superannuation guarantee rate from 1 July 2025 */
+/* The owners' pay (2 x $70,000 a year, as the owner gave it, before super). */
+const OWNERS_ANNUAL_PAY = 140000;
+function ownersCost(days) { return OWNERS_ANNUAL_PAY * (1 + SUPER_RATE) / 365 * days; }
+function dayCount(from, to) { return Math.round((Date.parse(to + 'T00:00:00Z') - Date.parse(from + 'T00:00:00Z')) / 86400000) + 1; }
+function daysInMonth(ym) { const [y, m] = ym.split('-').map(Number); return new Date(Date.UTC(y, m, 0)).getUTCDate(); }
 
 function parseCsv(text) {
   const rows = []; let row = []; let cell = ''; let q = false;
