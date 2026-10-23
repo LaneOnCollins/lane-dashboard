@@ -193,11 +193,13 @@ const ADAPTERS = {
      Example (Deputy): pasted permanent token (secret ROSTERING_API_TOKEN).
   */
   rostering: {
-    /* Connecteam (no API on the owner's plan): fed by the Time Clock shift
-       report export (CSV), uploaded weekly on the Connections screen. Cost =
-       clocked shift hours x the shift's hourly rate, plus super at the SG rate,
-       by shift start date. Absences/time off are left out. Always shown as
-       PROJECTED beside the actual Wage % from Xero. The two owners don't clock
+    /* Connecteam (no API on the owner's plan): fed by the Schedule export
+       (Actions > Export week, saved as CSV), uploaded weekly on the Connections
+       screen. Rostered cost (kpi-spec: projected Wage % = rostered cost /
+       Revenue) = scheduled hours less unpaid breaks x the person's hourly rate
+       (STAFF_RATES), plus super at the SG rate, by shift date. Unavailability
+       rows are left out. Always shown as PROJECTED beside the actual Wage %
+       from Xero. The two owners don't clock
        in, so their fixed pay (OWNERS_ANNUAL_PAY, plus super) is added per day
        for any period that has uploaded shifts. */
     configured: true,
@@ -206,7 +208,7 @@ const ADAPTERS = {
     oauth: {},
     async status(env, h) {
       const last = await env.TOKENS.get('lastSync:rostering');
-      return { connected: !!last, org: last ? 'Connecteam time clock (uploaded file)' : null, lastSync: last };
+      return { connected: !!last, org: last ? 'Connecteam schedule (uploaded file)' : null, lastSync: last };
     },
     async fetchRange(env, h, q) {
       const r = await h.readIngested(q.from, q.to);
@@ -216,7 +218,11 @@ const ADAPTERS = {
       const m = await h.monthlyIngested(q.fromMonth, q.toMonth);
       return { months: m.months, cost: m.byMonth.map((x, i) => (x ? round2((x.cost || 0) + ownersCost(daysInMonth(m.months[i]))) : null)) };
     },
-    async parseExport(env, h, raw) { return parseConnecteamTimeclock(raw.text); }
+    async parseExport(env, h, raw) {
+      const { rows, unrated } = parseConnecteamSchedule(raw.text);
+      if (unrated.length) await diagNote(env, 'rostering', 'no hourly rate for: ' + unrated.join(', '), null);
+      return rows;
+    }
   }
 };
 
@@ -416,21 +422,45 @@ function hoursOf(s) {
   const v = parseFloat(s);
   return isFinite(v) ? v : 0;
 }
-function parseConnecteamTimeclock(text) {
+/* Hourly base rates (AUD) by Connecteam name, from the owner's Time Clock
+   shift report (Hourly rate column). Update when rates change. Rostered
+   shifts for anyone not listed are costed at 0 and noted in /api/diag. */
+const STAFF_RATES = {
+  'ally lawrence': 28.78, 'archie cunningham': 16.16, 'bowie longbottom': 28.78,
+  'ella koenig': 28.78, 'hannah feldhausen': 33.91, 'hannah greene': 33.85,
+  'mia lawrence': 28.78, 'mitch smee': 33.85, 'sam herdson': 16.53,
+  'spencer vaughan': 16.53, 'will campbell': 24.48, 'wing ee yap': 33.85
+};
+/* The owners are on the roster but paid a fixed amount (OWNERS_ANNUAL_PAY). */
+const OWNER_NAMES = ['becky morgan', 'robbie blackburn'];
+
+function parseConnecteamSchedule(text) {
   const rows = parseCsv(text);
-  const hi = rows.findIndex((r) => r.some((c) => /^start date$/i.test(c.trim())) && r.some((c) => /^shift hours$/i.test(c.trim())));
-  if (hi < 0) throw new Error('not a Connecteam time clock report');
+  const hi = rows.findIndex((r) => r.some((c) => /^users$/i.test(c.trim())) && r.some((c) => /^unpaid breaks$/i.test(c.trim())));
+  if (hi < 0) throw new Error('not a Connecteam schedule export');
   const head = rows[hi].map((c) => c.trim().toLowerCase());
   const col = (re) => head.findIndex((c) => re.test(c));
-  const iDate = col(/^start date$/), iIn = col(/^in$/), iHours = col(/^shift hours$/), iRate = col(/^hourly rate/);
-  const byDay = {};
+  const iDate = col(/^date$/), iStart = col(/^start$/), iEnd = col(/^end$/), iAvail = col(/^availability status$/),
+    iUser = col(/^users$/), iBreak = col(/^unpaid breaks$/);
+  const byDay = {}; const unrated = new Set();
   for (const r of rows.slice(hi + 1)) {
     const date = isoDate(r[iDate]);
-    if (!date || !String(r[iIn] || '').trim()) continue; /* absences/time off have no clock-in */
-    const cost = hoursOf(r[iHours]) * (parseFloat(r[iRate]) || 0) * (1 + SUPER_RATE);
-    byDay[date] = (byDay[date] || 0) + cost;
+    if (!date) continue;
+    if (!(date in byDay)) byDay[date] = 0; /* every day in the file is overwritten, even if empty */
+    if (String(r[iAvail] || '').trim()) continue; /* unavailability, not a shift */
+    const start = hoursOf(r[iStart]), end = hoursOf(r[iEnd]);
+    if (!/:/.test(r[iStart] || '') || !/:/.test(r[iEnd] || '')) continue;
+    const name = String(r[iUser] || '').trim().replace(/\s+/g, ' ').toLowerCase();
+    if (!name || OWNER_NAMES.includes(name)) continue;
+    const hours = Math.max(0, (end > start ? end - start : end + 24 - start) - hoursOf(r[iBreak]));
+    const rate = STAFF_RATES[name];
+    if (rate == null) { unrated.add(r[iUser].trim()); continue; }
+    byDay[date] += hours * rate * (1 + SUPER_RATE);
   }
-  return Object.keys(byDay).sort().map((date) => ({ date, cost: Math.round(byDay[date] * 100) / 100 }));
+  return {
+    rows: Object.keys(byDay).sort().map((date) => ({ date, cost: Math.round(byDay[date] * 100) / 100 })),
+    unrated: [...unrated]
+  };
 }
 
 /* ============================================================================
