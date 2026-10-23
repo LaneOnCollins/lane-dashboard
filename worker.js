@@ -102,24 +102,37 @@ const ADAPTERS = {
       return cols[0];
     },
     async fetchMonthly(env, h, q) {
-      /* Xero caps comparison periods at 11 (12 columns): stitch in chunks of 12 months. */
+      /* Xero caps comparison periods at 11 (12 columns): stitch in chunks of 12
+         months. A chunk that fails falls back to one call per month, and a month
+         that still fails stays null - one bad month never blanks the trend. */
       const months = monthList(q.fromMonth, q.toMonth);
       const out = { months, revenue: [], cogs: [], wagesSuper: [], overheads: [] };
+      const push = (c) => {
+        out.revenue.push(c ? c.revenue : null); out.cogs.push(c ? c.cogs : null);
+        out.wagesSuper.push(c ? c.wagesSuper : null); out.overheads.push(c ? c.overheads : null);
+      };
+      const monthEnd = (mo) => {
+        const [y, m] = mo.split('-').map(Number);
+        return mo + '-' + String(new Date(Date.UTC(y, m, 0)).getUTCDate()).padStart(2, '0');
+      };
       for (let i = 0; i < months.length; i += 12) {
         const chunk = months.slice(i, i + 12);
         const last = chunk[chunk.length - 1];
-        const [y, m] = last.split('-').map(Number);
-        const lastDay = String(new Date(Date.UTC(y, m, 0)).getUTCDate()).padStart(2, '0');
-        const rep = await xeroPnl(h, {
-          fromDate: last + '-01', toDate: last + '-' + lastDay,
-          periods: String(chunk.length - 1), timeframe: 'MONTH'
-        });
-        /* columns run newest first; reverse onto the oldest-first month grid */
-        const cols = xeroColumns(rep, chunk.length).reverse();
-        cols.forEach((c) => {
-          out.revenue.push(c.revenue); out.cogs.push(c.cogs);
-          out.wagesSuper.push(c.wagesSuper); out.overheads.push(c.overheads);
-        });
+        try {
+          const params = { fromDate: last + '-01', toDate: monthEnd(last) };
+          if (chunk.length > 1) { params.periods = String(chunk.length - 1); params.timeframe = 'MONTH'; }
+          const rep = await xeroPnl(h, params);
+          /* columns run newest first; reverse onto the oldest-first month grid */
+          xeroColumns(rep, chunk.length).reverse().forEach(push);
+        } catch (err) {
+          await xeroNote(env, 'trend chunk ' + chunk[0] + '..' + last, err);
+          for (const mo of chunk) {
+            try {
+              const rep = await xeroPnl(h, { fromDate: mo + '-01', toDate: monthEnd(mo) });
+              push(xeroColumns(rep, 1)[0]);
+            } catch (e2) { await xeroNote(env, 'trend month ' + mo, e2); push(null); }
+          }
+        }
       }
       return out;
     }
@@ -215,6 +228,17 @@ function xeroNum(cell) {
   return isFinite(v) ? v : 0;
 }
 const round2 = (v) => Math.round(v * 100) / 100;
+
+/* Keep the last few provider errors (status + short detail, never tokens) so the
+   build can be diagnosed from /api/diag without access to Cloudflare logs. */
+async function xeroNote(env, what, err) {
+  try {
+    const raw = await env.TOKENS.get('diag:accounting');
+    const list = raw ? JSON.parse(raw) : [];
+    list.unshift({ at: new Date().toISOString(), what, status: (err && err.status) || 0, detail: String((err && err.detail) || (err && err.message) || '').slice(0, 300) });
+    await env.TOKENS.put('diag:accounting', JSON.stringify(list.slice(0, 15)), { expirationTtl: 86400 });
+  } catch (e) {}
+}
 
 /* Walk the report into n period columns (as Xero orders them: newest first). */
 function xeroColumns(report, n) {
@@ -365,7 +389,11 @@ function makeHelpers(env, source) {
         if (t) { t.expires_at = 0; await saveTokens(env, source, t); } /* force refresh */
         res = await doFetch();
       }
-      if (!res.ok) { const e = new Error('HTTP ' + res.status); e.status = res.status; throw e; }
+      if (!res.ok) {
+        const e = new Error('HTTP ' + res.status); e.status = res.status;
+        try { e.detail = (await res.text()).slice(0, 300); } catch (x) {}
+        throw e;
+      }
       return res.json();
     }
   };
@@ -884,6 +912,11 @@ export default {
     if (authRoute && request.method === 'GET') {
       if (!loggedIn) return Response.redirect(url.origin + '/', 302);
       return authRoute[2] === 'start' ? authStart(env, authRoute[1], url) : authCallback(env, authRoute[1], url);
+    }
+    if (path === '/api/diag' && request.method === 'GET') {
+      if (!loggedIn) return json({ error: 'auth' }, 401);
+      const raw = await env.TOKENS.get('diag:accounting');
+      return json({ accounting: raw ? JSON.parse(raw) : [] });
     }
     if (path === '/api/disconnect' && request.method === 'POST') {
       if (!loggedIn) return json({ error: 'auth' }, 401);
