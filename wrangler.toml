@@ -9,6 +9,7 @@ name = "lane-dashboard"          # SET to the GitHub REPO name before first push
 main = "worker.js"
 compatibility_date = "2026-06-01"
 workers_dev = true                # keep the free .workers.dev address switched on
+keep_vars = true                  # never wipe values the owner adds in the Cloudflare dashboard
 
 # The dashboard page is bundled into the Worker as text.
 rules = [
