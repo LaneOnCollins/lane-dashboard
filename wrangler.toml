@@ -29,7 +29,7 @@ binding = "TOKENS"
 # and set it below, and push. Otherwise a later deploy can try to re-provision and
 # either error (10014 "namespace already exists") or orphan the namespace holding
 # the dashboard password + connection tokens. Omit once, then pin:
-# id = "<paste the TOKENS namespace id here after the first deploy>"
+id = "453bf51f3a2a4d3699dfded4e9270d48"   # pinned after first deploy (lane-dashboard-tokens)
 
 # ----------------------------------------------------------------------------
 # Secrets - NEVER written in any file, never committed. You cannot reach the
