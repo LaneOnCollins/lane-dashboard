@@ -431,6 +431,8 @@ const STAFF_RATES = {
   'mia lawrence': 28.78, 'mitch smee': 33.85, 'peter verkerk': 33.85, 'sam herdson': 16.53,
   'spencer vaughan': 16.53, 'will campbell': 24.48, 'wing ee yap': 33.85
 };
+/* Contractors: costed at their rate with no super added. */
+const CONTRACTOR_NAMES = ['peter verkerk'];
 /* The owners are on the roster but paid a fixed amount (OWNERS_ANNUAL_PAY). */
 const OWNER_NAMES = ['becky morgan', 'robbie blackburn'];
 
@@ -455,7 +457,7 @@ function parseConnecteamSchedule(text) {
     const hours = Math.max(0, (end > start ? end - start : end + 24 - start) - hoursOf(r[iBreak]));
     const rate = STAFF_RATES[name];
     if (rate == null) { unrated.add(r[iUser].trim()); continue; }
-    byDay[date] += hours * rate * (1 + SUPER_RATE);
+    byDay[date] += hours * rate * (CONTRACTOR_NAMES.includes(name) ? 1 : 1 + SUPER_RATE);
   }
   return {
     rows: Object.keys(byDay).sort().map((date) => ({ date, cost: Math.round(byDay[date] * 100) / 100 })),
