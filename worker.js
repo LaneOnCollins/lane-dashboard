@@ -199,8 +199,9 @@ const ADAPTERS = {
        Revenue) = scheduled hours less unpaid breaks x the person's hourly rate
        (STAFF_RATES), plus super at the SG rate, by shift date. Unavailability
        rows are left out. Always shown as PROJECTED beside the actual Wage %
-       from Xero. The two owners don't clock
-       in, so their fixed pay (OWNERS_ANNUAL_PAY, plus super) is added per day
+       from Xero. The two owners and the full-time
+       salaried staff member are paid a fixed amount, so their pay
+       (SALARIED_ANNUAL_PAY, plus super) is added per day
        for any period that has uploaded shifts. */
     configured: true,
     mode: 'export',
@@ -212,11 +213,11 @@ const ADAPTERS = {
     },
     async fetchRange(env, h, q) {
       const r = await h.readIngested(q.from, q.to);
-      return r.daysWithData ? { cost: round2((r.sums.cost || 0) + ownersCost(dayCount(q.from, q.to))) } : null;
+      return r.daysWithData ? { cost: round2((r.sums.cost || 0) + salariedCost(dayCount(q.from, q.to))) } : null;
     },
     async fetchMonthly(env, h, q) {
       const m = await h.monthlyIngested(q.fromMonth, q.toMonth);
-      return { months: m.months, cost: m.byMonth.map((x, i) => (x ? round2((x.cost || 0) + ownersCost(daysInMonth(m.months[i]))) : null)) };
+      return { months: m.months, cost: m.byMonth.map((x, i) => (x ? round2((x.cost || 0) + salariedCost(daysInMonth(m.months[i]))) : null)) };
     },
     async parseExport(env, h, raw) {
       const { rows, unrated } = parseConnecteamSchedule(raw.text);
@@ -377,9 +378,10 @@ async function squareCount(env, range, granularity, tz) {
 
 /* ---------------- Connecteam time clock export (rostering adapter) ---------- */
 const SUPER_RATE = 0.12; /* Australian superannuation guarantee rate from 1 July 2025 */
-/* The owners' pay (2 x $70,000 a year, as the owner gave it, before super). */
-const OWNERS_ANNUAL_PAY = 140000;
-function ownersCost(days) { return OWNERS_ANNUAL_PAY * (1 + SUPER_RATE) / 365 * days; }
+/* Fixed annual pay before super, as the owner gave it: the two owners at
+   $70,000 each and Hannah Feldhausen (full time) at $67,000. */
+const SALARIED_ANNUAL_PAY = 70000 + 70000 + 67000;
+function salariedCost(days) { return SALARIED_ANNUAL_PAY * (1 + SUPER_RATE) / 365 * days; }
 function dayCount(from, to) { return Math.round((Date.parse(to + 'T00:00:00Z') - Date.parse(from + 'T00:00:00Z')) / 86400000) + 1; }
 function daysInMonth(ym) { const [y, m] = ym.split('-').map(Number); return new Date(Date.UTC(y, m, 0)).getUTCDate(); }
 
@@ -433,8 +435,9 @@ const STAFF_RATES = {
 };
 /* Contractors: costed at their rate with no super added. */
 const CONTRACTOR_NAMES = ['peter verkerk'];
-/* The owners are on the roster but paid a fixed amount (OWNERS_ANNUAL_PAY). */
-const OWNER_NAMES = ['becky morgan', 'robbie blackburn'];
+/* On the roster but paid a fixed amount (SALARIED_ANNUAL_PAY), so their
+   shifts are not costed again. */
+const SALARIED_NAMES = ['becky morgan', 'robbie blackburn', 'hannah feldhausen'];
 
 function parseConnecteamSchedule(text) {
   const rows = parseCsv(text);
@@ -453,7 +456,7 @@ function parseConnecteamSchedule(text) {
     const start = hoursOf(r[iStart]), end = hoursOf(r[iEnd]);
     if (!/:/.test(r[iStart] || '') || !/:/.test(r[iEnd] || '')) continue;
     const name = String(r[iUser] || '').trim().replace(/\s+/g, ' ').toLowerCase();
-    if (!name || OWNER_NAMES.includes(name)) continue;
+    if (!name || SALARIED_NAMES.includes(name)) continue;
     const hours = Math.max(0, (end > start ? end - start : end + 24 - start) - hoursOf(r[iBreak]));
     const rate = STAFF_RATES[name];
     if (rate == null) { unrated.add(r[iUser].trim()); continue; }
@@ -675,7 +678,7 @@ async function isLoggedIn(request, env) {
 /* ---------------- Roster forecast page (/forecast) ----------------
    An addition beyond the kit's six metrics, labelled as a forecast: rostered
    cost for this week and the next three (from the uploaded Connecteam schedule,
-   drafts included, plus the owners' pay) against average weekly revenue from
+   drafts included, plus fixed salaries) against average weekly revenue from
    Xero over the four weeks before last week (last week is left out because
    Xero runs about a week behind until reconciled). The board's own Wage %
    cards are unchanged. */
@@ -722,7 +725,7 @@ async function forecastPage(env) {
     + '.over{color:#C04B28;font-weight:500}.ok{color:#2F7A55;font-weight:500}.muted{color:#8C8075}'
     + '</style></head><body><div class="wrap"><a href="/">\u2190 Back to dashboard</a>'
     + '<h1>Roster forecast</h1><span class="tag">FORECAST</span>'
-    + '<p>Wage cost from your uploaded Connecteam roster (draft shifts included, plus you and Robbie), compared with a typical week\u2019s revenue. Wage target <b id="tg">' + target + '</b>%.</p>'
+    + '<p>Wage cost from your uploaded Connecteam roster (draft shifts included, plus the fixed salaries for you, Robbie and Hannah F), compared with a typical week\u2019s revenue. Wage target <b id="tg">' + target + '</b>%.</p>'
     + '<table><thead><tr><th>Week</th><th>Rostered cost</th><th>% of usual revenue</th></tr></thead><tbody>' + rows + '</tbody></table>'
     + '<p>' + base + '</p></div>'
     + '<script>try{var t=Number((JSON.parse(localStorage.getItem("vd_settings")||"{}").targets||{}).wage);'
