@@ -672,6 +672,64 @@ function getCookie(request, name) {
 async function isLoggedIn(request, env) {
   return await validSession(env, getCookie(request, 'vd_session'));
 }
+/* ---------------- Roster forecast page (/forecast) ----------------
+   An addition beyond the kit's six metrics, labelled as a forecast: rostered
+   cost for this week and the next three (from the uploaded Connecteam schedule,
+   drafts included, plus the owners' pay) against average weekly revenue from
+   Xero over the four weeks before last week (last week is left out because
+   Xero runs about a week behind until reconciled). The board's own Wage %
+   cards are unchanged. */
+const FORECAST_TZ = 'Australia/Sydney';
+const FORECAST_WEEK_START = 3; /* Wednesday, as the Connecteam roster runs */
+function addDays(iso, n) { const d = new Date(iso + 'T12:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); }
+function fmtDay(iso) { return new Date(iso + 'T12:00:00Z').toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' }); }
+function fmtMoney(v) { return '$' + Math.round(v).toLocaleString('en-AU'); }
+async function forecastPage(env) {
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: FORECAST_TZ }).format(new Date());
+  const dow = new Date(today + 'T12:00:00Z').getUTCDay();
+  const weekStart = addDays(today, -((dow - FORECAST_WEEK_START + 7) % 7));
+  const baseFrom = addDays(weekStart, -35), baseTo = addDays(weekStart, -8);
+  let avgRevenue = null, revErr = false;
+  try {
+    const r = await ADAPTERS.accounting.fetchRange(env, makeHelpers(env, 'accounting'), { from: baseFrom, to: baseTo });
+    if (r && r.revenue > 0) avgRevenue = r.revenue / 4;
+  } catch (e) { revErr = true; }
+  const target = 30; /* default; the page swaps in the owner's own Wage target from this browser's settings */
+  let rows = '';
+  for (let i = 0; i < 4; i++) {
+    const from = addDays(weekStart, i * 7), to = addDays(from, 6);
+    const c = await ADAPTERS.rostering.fetchRange(env, makeHelpers(env, 'rostering'), { from, to });
+    const label = (i === 0 ? 'This week' : i === 1 ? 'Next week' : 'In ' + i + ' weeks') + '<span>' + fmtDay(from) + ' to ' + fmtDay(to) + '</span>';
+    if (!c) { rows += '<tr><td>' + label + '</td><td class="muted" colspan="2">No roster uploaded yet</td></tr>'; continue; }
+    const pct = avgRevenue ? c.cost / avgRevenue * 100 : null;
+    const cls = pct == null ? '' : pct > target ? 'over' : 'ok';
+    rows += '<tr><td>' + label + '</td><td>' + fmtMoney(c.cost) + '</td><td class="pct ' + cls + '" data-pct="' + (pct == null ? '' : pct) + '">' + (pct == null ? '-' : pct.toFixed(1) + '%') + '</td></tr>';
+  }
+  const base = avgRevenue
+    ? 'Average weekly revenue ' + fmtMoney(avgRevenue) + ', from Xero for ' + fmtDay(baseFrom) + ' to ' + fmtDay(baseTo) + ' (ex-GST). Last week is left out because Xero runs about a week behind.'
+    : (revErr ? 'Xero could not be reached just now, so the % can\u2019t be worked out. Try again in a little while.' : 'Xero has no revenue yet for ' + fmtDay(baseFrom) + ' to ' + fmtDay(baseTo) + ', so the % can\u2019t be worked out.');
+  return htmlResponse('<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Roster forecast</title>'
+    + '<link href="https://fonts.googleapis.com/css2?family=Khand:wght@600;700&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet">'
+    + '<style>'
+    + 'body{margin:0;background:#FAF7F2;font-family:"DM Sans",sans-serif;color:#2A2420}'
+    + '.wrap{max-width:640px;margin:0 auto;padding:2rem 16px}'
+    + 'a{color:#2A2420}h1{font-family:"Khand",sans-serif;font-size:32px;font-weight:700;color:#0D0D0D;margin:1rem 0 0.25rem}'
+    + '.tag{display:inline-block;font-size:12px;letter-spacing:0.08em;font-weight:500;padding:3px 8px;border-radius:6px;background:#ECE8FB;color:#4B3FA6}'
+    + 'p{font-size:14px;color:#8C8075;line-height:1.6}'
+    + 'table{width:100%;border-collapse:collapse;background:#fffdf9;border:1px solid rgba(13,13,13,0.08);border-radius:16px;overflow:hidden;margin:1rem 0}'
+    + 'th,td{text-align:left;padding:14px 16px;border-bottom:1px solid rgba(13,13,13,0.06);font-size:15px}th{font-size:12px;letter-spacing:0.08em;color:#8C8075;font-weight:500}'
+    + 'td:not(:first-child),th:not(:first-child){text-align:right}td span{display:block;font-size:13px;color:#8C8075}'
+    + '.over{color:#C04B28;font-weight:500}.ok{color:#2F7A55;font-weight:500}.muted{color:#8C8075}'
+    + '</style></head><body><div class="wrap"><a href="/">\u2190 Back to dashboard</a>'
+    + '<h1>Roster forecast</h1><span class="tag">FORECAST</span>'
+    + '<p>Wage cost from your uploaded Connecteam roster (draft shifts included, plus you and Robbie), compared with a typical week\u2019s revenue. Wage target <b id="tg">' + target + '</b>%.</p>'
+    + '<table><thead><tr><th>Week</th><th>Rostered cost</th><th>% of usual revenue</th></tr></thead><tbody>' + rows + '</tbody></table>'
+    + '<p>' + base + '</p></div>'
+    + '<script>try{var t=Number((JSON.parse(localStorage.getItem("vd_settings")||"{}").targets||{}).wage);'
+    + 'if(t>0){document.getElementById("tg").textContent=t;document.querySelectorAll(".pct").forEach(function(el){var v=parseFloat(el.dataset.pct);'
+    + 'if(isFinite(v)){el.className="pct "+(v>t?"over":"ok");}});}}catch(e){}</script></body></html>');
+}
+
 function htmlResponse(html) {
   return new Response(html, { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer' } });
 }
@@ -1101,6 +1159,10 @@ export default {
     if (authRoute && request.method === 'GET') {
       if (!loggedIn) return Response.redirect(url.origin + '/', 302);
       return authRoute[2] === 'start' ? authStart(env, authRoute[1], url) : authCallback(env, authRoute[1], url);
+    }
+    if (path === '/forecast' && request.method === 'GET') {
+      if (!loggedIn) return Response.redirect(url.origin + '/', 302);
+      return forecastPage(env);
     }
     if (path === '/api/diag' && request.method === 'GET') {
       if (!loggedIn) return json({ error: 'auth' }, 401);
